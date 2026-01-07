@@ -5,17 +5,25 @@ import threading
 import streamlit as st
 import pandas as pd
 import paho.mqtt.client as mqtt
-from streamlit_autorefresh import st_autorefresh 
+from streamlit_autorefresh import st_autorefresh
 
 # ---------- Config MQTT ----------
 BROKER = "4.219.13.227"
 PORT = 1883
 
-TOPIC_SENSORS   = "streamlit/brussels"  # ce que Node-RED publie pour les capteurs
-TOPIC_RGB_R     = "esp32/rgb/red"       # ce que l'ESP32 écoute
-TOPIC_RGB_G     = "esp32/rgb/green"
-TOPIC_RGB_B     = "esp32/rgb/blue"
+TOPIC_SENSORS = "streamlit/brussels"  # ce que Node-RED publie pour les capteurs
+TOPIC_RGB_R = "esp32/rgb/red"         # ce que l'ESP32 écoute (station locale)
+TOPIC_RGB_G = "esp32/rgb/green"
+TOPIC_RGB_B = "esp32/rgb/blue"
 
+# ---------- Config MQTT (Synchro RGB) ----------
+BROKER_SYNC_DEFAULT = "X.X.X.X"  # <-- mets ici l'IP du 2e broker MQTT (station distante)
+PORT_SYNC = 1883
+
+# Topics pour la LED distante (mets les bons si différents)
+TOPIC_SYNC_R = "esp32/rgb/red"
+TOPIC_SYNC_G = "esp32/rgb/green"
+TOPIC_SYNC_B = "esp32/rgb/blue"
 
 # ---------- État global MQTT (capteurs) ----------
 
@@ -79,23 +87,25 @@ def mqtt_loop():
             time.sleep(5)
 
 
-# ---------- MQTT publication RGB ----------
+# ---------- MQTT publication RGB (local ou synchro) ----------
 
-def publish_rgb(r, g, b):
+def publish_rgb(r, g, b, broker, port, topic_r, topic_g, topic_b):
     """Envoie les valeurs RGB vers l'ESP32 via MQTT."""
     try:
         pub = mqtt.Client()
-        pub.connect(BROKER, PORT, 60)
+        pub.connect(broker, port, 60)
 
         # On envoie les valeurs sous forme de texte, l'ESP32 fait atoi()
-        pub.publish(TOPIC_RGB_R, str(r))
-        pub.publish(TOPIC_RGB_G, str(g))
-        pub.publish(TOPIC_RGB_B, str(b))
+        pub.publish(topic_r, str(r))
+        pub.publish(topic_g, str(g))
+        pub.publish(topic_b, str(b))
 
         pub.disconnect()
-        print(f"RGB envoyé : R={r} G={g} B={b}")
+        print(f"RGB envoyé vers {broker}:{port} : R={r} G={g} B={b}")
+        return True
     except Exception as e:
         print("Erreur publish RGB:", e)
+        return False
 
 
 # ---------- Lancer le thread MQTT une seule fois ----------
@@ -103,7 +113,7 @@ if "mqtt_started" not in st.session_state:
     t = threading.Thread(target=mqtt_loop, daemon=True)
     t.start()
     st.session_state["mqtt_started"] = True
-    st.session_state["history"] = []   # pour les graphes
+    st.session_state["history"] = []  # pour les graphes
 
 
 # ---------- Auto-refresh de la page toutes les 2 secondes ----------
@@ -128,16 +138,16 @@ data = mqtt_state.last
 # Valeurs par défaut
 city = "Bruxelles"
 temp = None
-hum  = None
-lum  = None
-ts   = time.time()
+hum = None
+lum = None
+ts = time.time()
 
 if data is not None:
     city = data.get("city", "Bruxelles")
     temp = data.get("temperature")
-    hum  = data.get("humidity")
-    lum  = data.get("lum")
-    ts   = data.get("ts", time.time())
+    hum = data.get("humidity")
+    lum = data.get("lum")
+    ts = data.get("ts", time.time())
 
 
 def fmt_metric(val, unit="", decimals=1):
@@ -178,7 +188,7 @@ with col1:
     if lum is None:
         period = "Inconnu (en attente de données LDR)"
     else:
-        is_day = lum > 50   
+        is_day = lum > 50
         period = "Jour" if is_day else "Nuit"
 
     st.write("")
@@ -193,19 +203,53 @@ with col2:
         st.json(data)
 
 
-# ---------- Sliders RGB + envoi vers l'ESP32 ----------
+# ---------- Sidebar : Contrôle LED RGB + Mode Synchro ----------
 st.sidebar.header("Contrôle LED RGB")
 
+# ---- Mode Synchro (RGB sur autre broker) ----
+if "sync_mode" not in st.session_state:
+    st.session_state["sync_mode"] = False
+
+st.session_state["sync_mode"] = st.sidebar.checkbox(
+    "Mode Synchro (LED distante)",
+    value=st.session_state["sync_mode"]
+)
+
+broker_sync = st.sidebar.text_input(
+    "IP Broker Synchro (RGB distant)",
+    value=st.session_state.get("broker_sync", BROKER_SYNC_DEFAULT)
+)
+st.session_state["broker_sync"] = broker_sync.strip()
+
+# Choix du broker pour la LED RGB
+if st.session_state["sync_mode"]:
+    rgb_broker = st.session_state["broker_sync"]
+    rgb_port = PORT_SYNC
+    rgb_topic_r, rgb_topic_g, rgb_topic_b = TOPIC_SYNC_R, TOPIC_SYNC_G, TOPIC_SYNC_B
+else:
+    rgb_broker = BROKER
+    rgb_port = PORT
+    rgb_topic_r, rgb_topic_g, rgb_topic_b = TOPIC_RGB_R, TOPIC_RGB_G, TOPIC_RGB_B
+
+st.sidebar.info(f"🎛️ RGB connecté à : {rgb_broker}:{rgb_port}")
+
+# ---- Sliders RGB ----
 r_val = st.sidebar.slider("Rouge", 0, 255, 0)
-g_val = st.sidebar.slider("Vert",  0, 255, 0)
-b_val = st.sidebar.slider("Bleu",  0, 255, 0)
+g_val = st.sidebar.slider("Vert", 0, 255, 0)
+b_val = st.sidebar.slider("Bleu", 0, 255, 0)
 
 st.sidebar.write("Valeurs RGB sélectionnées :", r_val, g_val, b_val)
 
-if r_val is not None or g_val is not None or b_val is not None:
-    publish_rgb(r_val, g_val, b_val)
+# Envoi PWM (comme ton code actuel : envoi à chaque rerun)
+ok = publish_rgb(r_val, g_val, b_val, rgb_broker, rgb_port, rgb_topic_r, rgb_topic_g, rgb_topic_b)
 
-st.sidebar.caption("Les valeurs sont envoyées vers l'ESP32")
+if ok:
+    st.sidebar.caption("✅ Valeurs envoyées")
+else:
+    st.sidebar.caption("❌ Échec d'envoi (broker inaccessible ?)")
+
+# Optionnel : afficher aussi dans le main sur quel broker RGB tu es
+st.write(f"**Serveur MQTT utilisé pour la LED RGB :** `{rgb_broker}:{rgb_port}`")
 
 
 # ---------- Historique pour les graphes ----------

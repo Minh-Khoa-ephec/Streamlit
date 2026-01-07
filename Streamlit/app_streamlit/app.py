@@ -12,28 +12,27 @@ BROKER = "4.219.13.227"
 PORT = 1883
 
 TOPIC_SENSORS = "streamlit/brussels"  # ce que Node-RED publie pour les capteurs
-TOPIC_RGB_R = "esp32/rgb/red"         # ce que l'ESP32 écoute (station locale)
+
+# Mode normal (station locale) : 3 topics
+TOPIC_RGB_R = "esp32/rgb/red"
 TOPIC_RGB_G = "esp32/rgb/green"
 TOPIC_RGB_B = "esp32/rgb/blue"
 
-# ---------- Config MQTT (Synchro RGB) ----------
-BROKER_SYNC_DEFAULT = "X.X.X.X"  # <-- mets ici l'IP du 2e broker MQTT (station distante)
-PORT_SYNC = 1883
+# Mode synchro (2 stations) : JSON unique par station
+TOPIC_MINH_SET = "ESP/MINH"
+TOPIC_RAD_SET  = "ESP/RAD"
 
-# Topics pour la LED distante (mets les bons si différents)
-TOPIC_SYNC_R = "esp32/rgb/red"
-TOPIC_SYNC_G = "esp32/rgb/green"
-TOPIC_SYNC_B = "esp32/rgb/blue"
+# Switch synchro (optionnel côté Node-RED)
+TOPIC_SYNC_SWITCH = "ESP/sync"   # payload: "1" / "0"
+
 
 # ---------- État global MQTT (capteurs) ----------
-
 class MqttState:
     def __init__(self):
-        self.last = None        # dernière trame reçue (dict)
-        self.connected = False  # état connexion broker
+        self.last = None
+        self.connected = False
 
 
-# On stocke l'état dans session_state pour le garder malgré les reruns
 if "mqtt_state" not in st.session_state:
     st.session_state["mqtt_state"] = MqttState()
 
@@ -41,27 +40,19 @@ mqtt_state: MqttState = st.session_state["mqtt_state"]
 
 
 # ---------- Callbacks MQTT (réception capteurs) ----------
-
 def on_connect(client, userdata, flags, rc):
-    print("Code retour CONNEXION MQTT =", rc)
     if rc == 0:
         mqtt_state.connected = True
         client.subscribe(TOPIC_SENSORS)
-        print(f"OK connecté, abonné à {TOPIC_SENSORS}")
     else:
         mqtt_state.connected = False
-        print("Échec connexion MQTT, code rc =", rc)
-
 
 def on_disconnect(client, userdata, rc):
-    print("MQTT déconnecté (rc =", rc, ")")
     mqtt_state.connected = False
-
 
 def on_message(client, userdata, msg):
     try:
         payload = msg.payload.decode("utf-8")
-        print("Message reçu sur", msg.topic, ":", payload)
         data = json.loads(payload)
         if "ts" not in data:
             data["ts"] = time.time()
@@ -78,34 +69,46 @@ def mqtt_loop():
 
     while True:
         try:
-            print(f"Connexion au broker MQTT {BROKER} {PORT}")
             client.connect(BROKER, PORT, 60)
             client.loop_forever()
         except Exception as e:
-            print("Erreur dans mqtt_loop:", e)
+            print("Erreur mqtt_loop:", e)
             mqtt_state.connected = False
             time.sleep(5)
 
 
-# ---------- MQTT publication RGB (local ou synchro) ----------
-
-def publish_rgb(r, g, b, broker, port, topic_r, topic_g, topic_b):
-    """Envoie les valeurs RGB vers l'ESP32 via MQTT."""
+# ---------- Publication MQTT ----------
+def mqtt_publish(topic: str, payload: str) -> bool:
     try:
         pub = mqtt.Client()
-        pub.connect(broker, port, 60)
-
-        # On envoie les valeurs sous forme de texte, l'ESP32 fait atoi()
-        pub.publish(topic_r, str(r))
-        pub.publish(topic_g, str(g))
-        pub.publish(topic_b, str(b))
-
+        pub.connect(BROKER, PORT, 60)
+        pub.publish(topic, payload)
         pub.disconnect()
-        print(f"RGB envoyé vers {broker}:{port} : R={r} G={g} B={b}")
         return True
     except Exception as e:
-        print("Erreur publish RGB:", e)
+        print("Erreur publish:", e)
         return False
+
+
+def publish_rgb_local_3topics(r, g, b) -> bool:
+    """Mode normal : 3 topics, texte (atoi côté ESP32)."""
+    try:
+        pub = mqtt.Client()
+        pub.connect(BROKER, PORT, 60)
+        pub.publish(TOPIC_RGB_R, str(r))
+        pub.publish(TOPIC_RGB_G, str(g))
+        pub.publish(TOPIC_RGB_B, str(b))
+        pub.disconnect()
+        return True
+    except Exception as e:
+        print("Erreur publish RGB local:", e)
+        return False
+
+
+def publish_rgb_json(topic_set: str, r, g, b) -> bool:
+    """Mode synchro : JSON unique {"r","g","b"} vers station cible."""
+    payload = json.dumps({"r": int(r), "g": int(g), "b": int(b)})
+    return mqtt_publish(topic_set, payload)
 
 
 # ---------- Lancer le thread MQTT une seule fois ----------
@@ -113,29 +116,24 @@ if "mqtt_started" not in st.session_state:
     t = threading.Thread(target=mqtt_loop, daemon=True)
     t.start()
     st.session_state["mqtt_started"] = True
-    st.session_state["history"] = []  # pour les graphes
+    st.session_state["history"] = []
 
-
-# ---------- Auto-refresh de la page toutes les 2 secondes ----------
+# ---------- Auto-refresh ----------
 st_autorefresh(interval=2000, key="mqtt_refresh")
 
-
-# ---------- UI STREAMLIT ----------
+# ---------- UI ----------
 st.set_page_config(page_title="Météo Bruxelles", page_icon="☁️", layout="wide")
 
 st.title("Projet Final(2025-2026) - A3111 Industrie 4.0 et A304 Systèmes Embarqués 2")
 st.header("Station Météo TRAN")
 
-# Indicateur d'état MQTT (capteurs)
 if mqtt_state.connected:
     st.success(f"MQTT connecté au broker {BROKER}:{PORT}")
 else:
     st.warning(f"MQTT non connecté ou en attente de données depuis {BROKER}:{PORT}")
 
-# Dernière trame capteurs (peut être None)
 data = mqtt_state.last
 
-# Valeurs par défaut
 city = "Bruxelles"
 temp = None
 hum = None
@@ -149,7 +147,6 @@ if data is not None:
     lum = data.get("lum")
     ts = data.get("ts", time.time())
 
-
 def fmt_metric(val, unit="", decimals=1):
     if val is None:
         return "-"
@@ -158,8 +155,6 @@ def fmt_metric(val, unit="", decimals=1):
         return fmt.format(val) + (f" {unit}" if unit else "")
     return str(val)
 
-
-# ---------- Colonne principale : mesures + JSON ----------
 col1, col2 = st.columns([2, 3])
 
 with col1:
@@ -173,7 +168,6 @@ with col1:
     with c3:
         st.metric("Luminosité", fmt_metric(lum, "", 0))
 
-    # Ressenti
     if temp is None:
         feeling = "Inconnu (en attente de données)"
     else:
@@ -184,12 +178,10 @@ with col1:
         else:
             feeling = "Frais"
 
-    # Jour / nuit en fonction de la luminosité
     if lum is None:
         period = "Inconnu (en attente de données LDR)"
     else:
-        is_day = lum > 50
-        period = "Jour" if is_day else "Nuit"
+        period = "Jour" if lum > 50 else "Nuit"
 
     st.write("")
     st.markdown(f"**Ressenti :** {feeling}")
@@ -197,65 +189,81 @@ with col1:
 
 with col2:
     st.subheader("Dernière trame reçue")
-    if data is None:
-        st.json({"info": "Aucune donnée reçue pour l'instant"})
-    else:
-        st.json(data)
+    st.json(data if data is not None else {"info": "Aucune donnée reçue pour l'instant"})
 
 
-# ---------- Sidebar : Contrôle LED RGB + Mode Synchro ----------
+# ---------- Sidebar : RGB + Synchro ----------
 st.sidebar.header("Contrôle LED RGB")
 
-# ---- Mode Synchro (RGB sur autre broker) ----
 if "sync_mode" not in st.session_state:
     st.session_state["sync_mode"] = False
 
-st.session_state["sync_mode"] = st.sidebar.toggle(
-    "Mode Synchro (LED distante)",
-    value=st.session_state["sync_mode"]
+sync_mode = st.sidebar.toggle("Mode Synchro (2 stations)", value=st.session_state["sync_mode"])
+st.session_state["sync_mode"] = sync_mode
+
+# notifier Node-RED (optionnel)
+if "prev_sync_mode" not in st.session_state:
+    st.session_state["prev_sync_mode"] = sync_mode
+
+if sync_mode != st.session_state["prev_sync_mode"]:
+    mqtt_publish(TOPIC_SYNC_SWITCH, "1" if sync_mode else "0")
+    st.session_state["prev_sync_mode"] = sync_mode
+
+
+# --- Anti-spam: n'envoyer que si ça change ---
+def should_send(key, r, g, b):
+    last = st.session_state.get(key, (-1, -1, -1))
+    cur = (r, g, b)
+    if cur != last:
+        st.session_state[key] = cur
+        return True
+    return False
+
+
+if not sync_mode:
+    # ===== MODE NORMAL : station locale (esp32/rgb/red|green|blue) =====
+    st.sidebar.subheader("Station locale (MINH)")
+
+    r = st.sidebar.slider("Rouge", 0, 255, 0, key="r_local")
+    g = st.sidebar.slider("Vert", 0, 255, 0, key="g_local")
+    b = st.sidebar.slider("Bleu", 0, 255, 0, key="b_local")
+
+    if should_send("last_rgb_local", r, g, b):
+        ok = publish_rgb_local_3topics(r, g, b)
+        st.sidebar.caption("✅ Envoyé" if ok else "❌ Échec envoi")
+
+else:
+    # ===== MODE SYNCHRO : 2 stations indépendantes =====
+    st.sidebar.subheader("Station MINH")
+    r1 = st.sidebar.slider("R (MINH)", 0, 255, 0, key="r_minh")
+    g1 = st.sidebar.slider("G (MINH)", 0, 255, 0, key="g_minh")
+    b1 = st.sidebar.slider("B (MINH)", 0, 255, 0, key="b_minh")
+
+    if should_send("last_rgb_minh", r1, g1, b1):
+        ok = publish_rgb_json(TOPIC_MINH_SET, r1, g1, b1)
+        st.sidebar.caption("✅ MINH envoyé" if ok else "❌ MINH échec")
+
+    st.sidebar.divider()
+
+    st.sidebar.subheader("Station RAD")
+    r2 = st.sidebar.slider("R (RAD)", 0, 255, 0, key="r_rad")
+    g2 = st.sidebar.slider("G (RAD)", 0, 255, 0, key="g_rad")
+    b2 = st.sidebar.slider("B (RAD)", 0, 255, 0, key="b_rad")
+
+    if should_send("last_rgb_rad", r2, g2, b2):
+        ok = publish_rgb_json(TOPIC_RAD_SET, r2, g2, b2)
+        st.sidebar.caption("✅ RAD envoyé" if ok else "❌ RAD échec")
+
+
+st.write(
+    f"**Mode RGB :** `{'SYNCHRO (2 stations)' if sync_mode else 'NORMAL (station locale)'}`  "
+    f"| **Broker :** `{BROKER}:{PORT}`"
 )
 
-broker_sync = st.sidebar.text_input(
-    "IP Broker Synchro (RGB distant)",
-    value=st.session_state.get("broker_sync", BROKER_SYNC_DEFAULT)
-)
-st.session_state["broker_sync"] = broker_sync.strip()
 
-# Choix du broker pour la LED RGB
-if st.session_state["sync_mode"]:
-    rgb_broker = st.session_state["broker_sync"]
-    rgb_port = PORT_SYNC
-    rgb_topic_r, rgb_topic_g, rgb_topic_b = TOPIC_SYNC_R, TOPIC_SYNC_G, TOPIC_SYNC_B
-else:
-    rgb_broker = BROKER
-    rgb_port = PORT
-    rgb_topic_r, rgb_topic_g, rgb_topic_b = TOPIC_RGB_R, TOPIC_RGB_G, TOPIC_RGB_B
-
-st.sidebar.info(f"🎛️ RGB connecté à : {rgb_broker}:{rgb_port}")
-
-# ---- Sliders RGB ----
-r_val = st.sidebar.slider("Rouge", 0, 255, 0)
-g_val = st.sidebar.slider("Vert", 0, 255, 0)
-b_val = st.sidebar.slider("Bleu", 0, 255, 0)
-
-st.sidebar.write("Valeurs RGB sélectionnées :", r_val, g_val, b_val)
-
-# Envoi PWM (comme ton code actuel : envoi à chaque rerun)
-ok = publish_rgb(r_val, g_val, b_val, rgb_broker, rgb_port, rgb_topic_r, rgb_topic_g, rgb_topic_b)
-
-if ok:
-    st.sidebar.caption("✅ Valeurs envoyées")
-else:
-    st.sidebar.caption("❌ Échec d'envoi (broker inaccessible ?)")
-
-# Optionnel : afficher aussi dans le main sur quel broker RGB tu es
-st.write(f"**Serveur MQTT utilisé pour la LED RGB :** `{rgb_broker}:{rgb_port}`")
-
-
-# ---------- Historique pour les graphes ----------
+# ---------- Historique ----------
 history = st.session_state["history"]
 
-# On ajoute un point uniquement si on a des données capteurs
 if data is not None:
     history.append(
         {
@@ -270,12 +278,8 @@ if data is not None:
         history = history[-MAX_POINTS:]
     st.session_state["history"] = history
 
-# DataFrame même si vide
-if history:
-    df = pd.DataFrame(history).set_index("time")
-else:
-    df = pd.DataFrame(columns=["temp", "hum", "lum"])
-    df.index.name = "time"
+df = pd.DataFrame(history).set_index("time") if history else pd.DataFrame(columns=["temp", "hum", "lum"])
+df.index.name = "time"
 
 st.subheader("Évolution des mesures (Bruxelles)")
 

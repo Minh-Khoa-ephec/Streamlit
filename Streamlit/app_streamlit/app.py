@@ -210,7 +210,7 @@ st.sidebar.header("Contrôle LED RGB")
 if "sync_mode" not in st.session_state:
     st.session_state["sync_mode"] = False
 
-st.session_state["sync_mode"] = st.sidebar.checkbox(
+st.session_state["sync_mode"] = st.sidebar.toggle(
     "Mode Synchro (LED distante)",
     value=st.session_state["sync_mode"]
 )

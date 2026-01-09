@@ -40,6 +40,10 @@ if "mqtt_state" not in st.session_state:
     st.session_state["mqtt_state"] = MqttState()
 
 mqtt_state: MqttState = st.session_state["mqtt_state"]
+#  compatibilité si une ancienne session n'a pas l'attribut
+if not hasattr(mqtt_state, "last_sync_rx"):
+    mqtt_state.last_sync_rx = None
+
 
 
 # ---------- Callbacks MQTT ----------

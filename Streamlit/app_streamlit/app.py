@@ -106,9 +106,10 @@ def publish_rgb_local(r, g, b) -> bool:
 
 
 def publish_rgb_remote_json(r, g, b) -> bool:
-    """Mode synchro : JSON unique vers station distante."""
-    payload = json.dumps({"r": int(r), "g": int(g), "b": int(b)})
+    """Mode synchro : JSON unique vers station distante (avec src pour anti-boucle)."""
+    payload = json.dumps({"src": "MINH", "r": int(r), "g": int(g), "b": int(b)})
     return mqtt_publish(TOPIC_REMOTE_SET, payload)
+
 
 
 # ---------- Lancer le thread MQTT une seule fois ----------

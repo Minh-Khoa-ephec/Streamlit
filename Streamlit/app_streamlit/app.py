@@ -19,10 +19,10 @@ TOPIC_RGB_G = "esp32/rgb/green"
 TOPIC_RGB_B = "esp32/rgb/blue"
 
 # Mode SYNCHRO : on publie sur ESP/MINH (Node-RED route vers ESP/RAD)
-TOPIC_REMOTE_SET = "ESP/MINH"
+TOPIC_REMOTE_SET = "ESP/MINH envoi"
 
 # Réception synchro (RAD -> Node-RED -> MINH) revient aussi sur ESP/MINH
-TOPIC_REMOTE_RX = "ESP/MINH"
+TOPIC_REMOTE_RX = "ESP/MINH reception"
 
 # Switch synchro (Node-RED + ESP32)
 TOPIC_SYNC_SWITCH = "ESP/sync"  # payload "1" / "0"
@@ -40,10 +40,6 @@ if "mqtt_state" not in st.session_state:
     st.session_state["mqtt_state"] = MqttState()
 
 mqtt_state: MqttState = st.session_state["mqtt_state"]
-#  compatibilité si une ancienne session n'a pas l'attribut
-if not hasattr(mqtt_state, "last_sync_rx"):
-    mqtt_state.last_sync_rx = None
-
 
 
 # ---------- Callbacks MQTT ----------
@@ -52,7 +48,7 @@ def on_connect(client, userdata, flags, rc):
     if rc == 0:
         mqtt_state.connected = True
         client.subscribe(TOPIC_SENSORS)
-        client.subscribe(TOPIC_REMOTE_RX)  
+        client.subscribe(TOPIC_REMOTE_RX)  # ✅ écouter aussi la synchro
         print(f"OK connecté, abonné à {TOPIC_SENSORS} et {TOPIC_REMOTE_RX}")
     else:
         mqtt_state.connected = False
@@ -77,7 +73,8 @@ def on_message(client, userdata, msg):
 
         # synchro (RAD->Node-RED->MINH)
         if topic == TOPIC_REMOTE_RX:
-            
+            # ce topic peut contenir aussi nos propres envois.
+            # on stocke juste pour affichage/diagnostic
             try:
                 data = json.loads(payload)
             except Exception:
@@ -238,7 +235,7 @@ if "sync_mode" not in st.session_state:
     st.session_state["sync_mode"] = False
 
 sync_mode = st.sidebar.toggle(
-    "Mode Synchro ",
+    "Mode Synchro (sliders -> ESP/MINH -> Node-RED -> ESP/RAD)",
     value=st.session_state["sync_mode"]
 )
 st.session_state["sync_mode"] = sync_mode
@@ -260,11 +257,11 @@ def send_if_changed(r, g, b, send_fn, label_ok, key_state):
         ok = send_fn(r, g, b)
         if ok:
             st.session_state[key_state] = cur
-            st.sidebar.caption(f" {label_ok}")
+            st.sidebar.caption(f"✅ {label_ok}")
         else:
-            st.sidebar.caption("Échec d'envoi (broker ?)")
+            st.sidebar.caption("❌ Échec d'envoi (broker ?)")
 
-# quand on active/désactive le mode synchro : publier le switch + envoyer une trame initiale
+# ✅ quand on active/désactive le mode synchro : publier le switch + envoyer une trame initiale
 if sync_mode != st.session_state["prev_sync_mode"]:
     mqtt_publish(TOPIC_SYNC_SWITCH, "1" if sync_mode else "0")
     st.session_state["prev_sync_mode"] = sync_mode
@@ -351,5 +348,6 @@ with tab3:
         st.line_chart(df[["lum"]])
     else:
         st.info("Aucune donnée de luminosité reçue pour l'instant.")
+
 
 

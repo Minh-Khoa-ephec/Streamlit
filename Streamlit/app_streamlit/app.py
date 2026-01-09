@@ -19,7 +19,8 @@ TOPIC_RGB_G = "esp32/rgb/green"
 TOPIC_RGB_B = "esp32/rgb/blue"
 
 # Mode SYNCHRO : on contrôle UNIQUEMENT la station distante
-TOPIC_REMOTE_SET = "ESP/RAD"   
+TOPIC_REMOTE_SET = "ESP/MINH"
+   
 
 # Switch synchro (Node-RED peut activer ses règles si tu veux)
 TOPIC_SYNC_SWITCH = "ESP/sync"         # payload: "1" / "0"

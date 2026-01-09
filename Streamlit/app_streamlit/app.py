@@ -13,13 +13,13 @@ PORT = 1883
 
 TOPIC_SENSORS = "streamlit/brussels"  # capteurs via Node-RED
 
-# Mode NORMAL (station locale MINH)  ✅ on envoie maintenant EN 1 SEUL JSON (plus fiable)
+# Mode NORMAL (station locale MINH) ✅ 1 seul JSON (plus fiable)
 TOPIC_RGB_SET = "esp32/rgb/set"  # JSON {"r":..,"g":..,"b":..}
 
-# Mode SYNCHRO : on publie sur ESP/MINH (Node-RED route vers ESP/RAD)
+# Mode SYNCHRO : on publie vers ESP/MINH (Node-RED route vers ESP/RAD)
 TOPIC_REMOTE_SET = "ESP/MINH envoi"
 
-# Réception synchro (RAD -> Node-RED -> MINH) revient aussi sur ESP/MINH
+# Réception synchro (RAD -> Node-RED -> MINH)
 TOPIC_REMOTE_RX = "ESP/MINH reception"
 
 # Switch synchro (Node-RED + ESP32)
@@ -138,7 +138,7 @@ def mqtt_publish_fast(topic: str, payload: str, qos: int = 1, retain: bool = Fal
 
 def publish_rgb_local(r, g, b) -> bool:
     """
-    ✅ Mode normal : 1 seul topic JSON (esp32/rgb/set) -> beaucoup plus fiable et instantané
+    ✅ Mode normal : 1 seul topic JSON (esp32/rgb/set) -> fiable et instantané
     Format côté ESP32: {"r":..,"g":..,"b":..}
     """
     rgb = {"r": int(r), "g": int(g), "b": int(b)}
@@ -146,20 +146,21 @@ def publish_rgb_local(r, g, b) -> bool:
     return mqtt_publish_fast(TOPIC_RGB_SET, payload, qos=1, retain=False)
 
 
-def publish_rgb_remote_json(r, g, b) -> bool:
+def publish_rgb_remote_json(r, g, b, sync_mode: bool) -> bool:
     """
-    Mode synchro : JSON unique vers ESP/MINH (Node-RED route vers ESP/RAD)
-    Format EXACT demandé :
+    ✅ Mode synchro : ENVOI EXACT demandé vers RAD via Node-RED
+    Format EXACT :
     {"Synchro":true,"LED":true,"R":102,"G":0,"B":0}
-    - Synchro = true (car fonction utilisée uniquement en mode synchro)
-    - LED = true tant qu'au moins un slider != 0
+
+    - Synchro = true si mode synchro activé
+    - LED = true si au moins un slider != 0
     """
     r_i, g_i, b_i = int(r), int(g), int(b)
     led_on = (r_i != 0) or (g_i != 0) or (b_i != 0)
 
     payload_obj = {
-        "Synchro": True,
-        "LED": led_on,
+        "Synchro": bool(sync_mode),
+        "LED": bool(led_on),
         "R": r_i,
         "G": g_i,
         "B": b_i
@@ -279,7 +280,7 @@ if "last_rgb_sent_local" not in st.session_state:
 if "last_rgb_sent_remote" not in st.session_state:
     st.session_state["last_rgb_sent_remote"] = None
 
-# ✅ petit throttle pour éviter 50 publishes/sec quand tu glisses (sans casser le reste)
+# ✅ petit throttle pour éviter spam pendant le drag
 if "last_send_ms" not in st.session_state:
     st.session_state["last_send_ms"] = 0
 
@@ -315,8 +316,14 @@ if sync_mode != st.session_state["prev_sync_mode"]:
         r0 = st.session_state.get("r_remote", 0)
         g0 = st.session_state.get("g_remote", 0)
         b0 = st.session_state.get("b_remote", 0)
-        send_if_changed(r0, g0, b0, publish_rgb_remote_json,
-                        "Valeurs envoyées (INIT SYNCHRO)", "last_rgb_sent_remote")
+        # IMPORTANT: ici on impose Synchro:true
+        if st.session_state.get("last_rgb_sent_remote") != (int(r0), int(g0), int(b0)):
+            ok = publish_rgb_remote_json(r0, g0, b0, True)
+            if ok:
+                st.session_state["last_rgb_sent_remote"] = (int(r0), int(g0), int(b0))
+                st.sidebar.caption(f"✅ Valeurs envoyées (INIT SYNCHRO) : {(int(r0), int(g0), int(b0))}")
+            else:
+                st.sidebar.caption("❌ Échec INIT SYNCHRO")
     else:
         st.session_state["last_rgb_sent_local"] = None
         # envoi initial local
@@ -334,7 +341,6 @@ if not sync_mode:
     g_val = st.sidebar.slider("Vert", 0, 255, 0, key="g_local")
     b_val = st.sidebar.slider("Bleu", 0, 255, 0, key="b_local")
 
-    # ✅ publish fiable + rapide
     send_throttled(r_val, g_val, b_val, publish_rgb_local,
                    "Valeurs envoyées (LOCAL)", "last_rgb_sent_local")
 
@@ -346,7 +352,11 @@ else:
     g_val = st.sidebar.slider("Vert (RAD)", 0, 255, 0, key="g_remote")
     b_val = st.sidebar.slider("Bleu (RAD)", 0, 255, 0, key="b_remote")
 
-    send_throttled(r_val, g_val, b_val, publish_rgb_remote_json,
+    # ✅ ici on envoie EXACT: {"Synchro":true,"LED":true,"R":...,"G":...,"B":...}
+    def _send_remote(r, g, b):
+        return publish_rgb_remote_json(r, g, b, True)
+
+    send_throttled(r_val, g_val, b_val, _send_remote,
                    "Valeurs envoyées (ESP/MINH -> ESP/RAD)", "last_rgb_sent_remote")
 
     st.sidebar.warning("Mode SYNCHRO : contrôle UNIQUEMENT la LED de RAD (via Node-RED).")

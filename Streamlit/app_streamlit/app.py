@@ -18,12 +18,11 @@ TOPIC_RGB_R = "esp32/rgb/red"
 TOPIC_RGB_G = "esp32/rgb/green"
 TOPIC_RGB_B = "esp32/rgb/blue"
 
-# Mode SYNCHRO : on contrôle UNIQUEMENT la station distante
+# Mode SYNCHRO : on publie sur notre topic (Node-RED route vers RAD)
 TOPIC_REMOTE_SET = "ESP/MINH"
-   
 
-# Switch synchro (Node-RED peut activer ses règles si tu veux)
-TOPIC_SYNC_SWITCH = "ESP/sync"         # payload: "1" / "0"
+# Switch synchro (Node-RED active ses règles + ESP32 bascule)
+TOPIC_SYNC_SWITCH = "ESP/sync"  # payload: "1" / "0"
 
 
 # ---------- État global MQTT (capteurs) ----------
@@ -31,6 +30,7 @@ class MqttState:
     def __init__(self):
         self.last = None
         self.connected = False
+
 
 if "mqtt_state" not in st.session_state:
     st.session_state["mqtt_state"] = MqttState()
@@ -48,8 +48,10 @@ def on_connect(client, userdata, flags, rc):
     else:
         mqtt_state.connected = False
 
+
 def on_disconnect(client, userdata, rc):
     mqtt_state.connected = False
+
 
 def on_message(client, userdata, msg):
     try:
@@ -60,6 +62,7 @@ def on_message(client, userdata, msg):
         mqtt_state.last = data
     except Exception as e:
         print("Erreur MQTT:", e)
+
 
 def mqtt_loop():
     client = mqtt.Client()
@@ -96,9 +99,9 @@ def publish_rgb_local(r, g, b) -> bool:
     try:
         pub = mqtt.Client()
         pub.connect(BROKER, PORT, 60)
-        pub.publish(TOPIC_RGB_R, str(r))
-        pub.publish(TOPIC_RGB_G, str(g))
-        pub.publish(TOPIC_RGB_B, str(b))
+        pub.publish(TOPIC_RGB_R, str(int(r)))
+        pub.publish(TOPIC_RGB_G, str(int(g)))
+        pub.publish(TOPIC_RGB_B, str(int(b)))
         pub.disconnect()
         return True
     except Exception as e:
@@ -107,10 +110,9 @@ def publish_rgb_local(r, g, b) -> bool:
 
 
 def publish_rgb_remote_json(r, g, b) -> bool:
-    """Mode synchro : JSON unique vers station distante (avec src pour anti-boucle)."""
+    """Mode synchro : JSON unique vers notre topic (Node-RED route vers RAD)."""
     payload = json.dumps({"src": "MINH", "r": int(r), "g": int(g), "b": int(b)})
     return mqtt_publish(TOPIC_REMOTE_SET, payload)
-
 
 
 # ---------- Lancer le thread MQTT une seule fois ----------
@@ -120,8 +122,10 @@ if "mqtt_started" not in st.session_state:
     st.session_state["mqtt_started"] = True
     st.session_state["history"] = []
 
+
 # ---------- Auto-refresh ----------
 st_autorefresh(interval=2000, key="mqtt_refresh")
+
 
 # ---------- UI STREAMLIT ----------
 st.set_page_config(page_title="Météo Bruxelles", page_icon="☁️", layout="wide")
@@ -212,23 +216,34 @@ st.session_state["sync_mode"] = sync_mode
 if "prev_sync_mode" not in st.session_state:
     st.session_state["prev_sync_mode"] = sync_mode
 
+# Anti-spam : séparé LOCAL / SYNC
+if "last_rgb_sent_local" not in st.session_state:
+    st.session_state["last_rgb_sent_local"] = None
+if "last_rgb_sent_remote" not in st.session_state:
+    st.session_state["last_rgb_sent_remote"] = None
+
+
+def send_if_changed(r, g, b, send_fn, label_ok, key_state):
+    cur = (int(r), int(g), int(b))
+    if st.session_state[key_state] != cur:
+        ok = send_fn(r, g, b)
+        if ok:
+            st.session_state[key_state] = cur
+            st.sidebar.caption(f"✅ {label_ok}")
+        else:
+            st.sidebar.caption("❌ Échec d'envoi (broker ?)")
+
+
 if sync_mode != st.session_state["prev_sync_mode"]:
     mqtt_publish(TOPIC_SYNC_SWITCH, "1" if sync_mode else "0")
     st.session_state["prev_sync_mode"] = sync_mode
 
-# Anti-spam : envoi seulement si changement
-if "last_rgb_sent" not in st.session_state:
-    st.session_state["last_rgb_sent"] = (-1, -1, -1)
+    # reset anti-spam sur le mode actif (sinon peut rester coincé à 0,0,0)
+    if sync_mode:
+        st.session_state["last_rgb_sent_remote"] = None
+    else:
+        st.session_state["last_rgb_sent_local"] = None
 
-def send_if_changed(r, g, b, send_fn, label_ok):
-    cur = (r, g, b)
-    if cur != st.session_state["last_rgb_sent"]:
-        ok = send_fn(r, g, b)
-        if ok:
-            st.session_state["last_rgb_sent"] = cur
-            st.sidebar.caption(f"✅ {label_ok}")
-        else:
-            st.sidebar.caption(" Échec d'envoi (broker ?)")
 
 if not sync_mode:
     # ===== MODE NORMAL : contrôle LED LOCALE (MINH) =====
@@ -237,7 +252,7 @@ if not sync_mode:
     g_val = st.sidebar.slider("Vert", 0, 255, 0, key="g_local")
     b_val = st.sidebar.slider("Bleu", 0, 255, 0, key="b_local")
 
-    send_if_changed(r_val, g_val, b_val, publish_rgb_local, "Valeurs envoyées (LOCAL)")
+    send_if_changed(r_val, g_val, b_val, publish_rgb_local, "Valeurs envoyées (LOCAL)", "last_rgb_sent_local")
 
     st.sidebar.info("Mode NORMAL : contrôles LED MINH.")
 else:
@@ -247,9 +262,10 @@ else:
     g_val = st.sidebar.slider("Vert (RAD)", 0, 255, 0, key="g_remote")
     b_val = st.sidebar.slider("Bleu (RAD)", 0, 255, 0, key="b_remote")
 
-    send_if_changed(r_val, g_val, b_val, publish_rgb_remote_json, "Valeurs envoyées (RAD)")
+    send_if_changed(r_val, g_val, b_val, publish_rgb_remote_json, "Valeurs envoyées (RAD)", "last_rgb_sent_remote")
 
     st.sidebar.warning("Mode SYNCHRO : NE contrôles PLUS LED MINH.\ncontrôle UNIQUEMENT LED de RAD")
+
 
 st.write(
     f"**Mode RGB :** `{'SYNCHRO (contrôle RAD)' if sync_mode else 'NORMAL (contrôle MINH)'}`  "

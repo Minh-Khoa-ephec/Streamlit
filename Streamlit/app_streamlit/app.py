@@ -148,8 +148,25 @@ def publish_rgb_local(r, g, b) -> bool:
 
 
 def publish_rgb_remote_json(r, g, b) -> bool:
-    """Mode synchro : JSON unique vers ESP/MINH (Node-RED route vers ESP/RAD)."""
-    payload = json.dumps({"src": "MINH", "r": int(r), "g": int(g), "b": int(b)})
+    """
+    Mode synchro : JSON unique vers ESP/MINH (Node-RED route vers ESP/RAD)
+    Format EXACT demandé :
+    {"Synchro":true,"LED":true,"R":102,"G":0,"B":0}
+    - Synchro = true (car fonction utilisée uniquement en mode synchro)
+    - LED = true tant qu'au moins un slider != 0
+    """
+    r_i, g_i, b_i = int(r), int(g), int(b)
+    led_on = (r_i != 0) or (g_i != 0) or (b_i != 0)
+
+    payload_obj = {
+        "Synchro": True,
+        "LED": led_on,
+        "R": r_i,
+        "G": g_i,
+        "B": b_i
+    }
+
+    payload = json.dumps(payload_obj, separators=(",", ":"))
     return mqtt_publish(TOPIC_REMOTE_SET, payload)
 
 
@@ -275,7 +292,6 @@ def send_if_changed(r, g, b, send_fn, label_ok, key_state):
         else:
             st.sidebar.caption("❌ Échec d'envoi (broker ?)")
 
-
 # ✅ quand on active/désactive le mode synchro : publier le switch + envoyer une trame initiale
 if sync_mode != st.session_state["prev_sync_mode"]:
     mqtt_publish(TOPIC_SYNC_SWITCH, "1" if sync_mode else "0")
@@ -292,7 +308,7 @@ if sync_mode != st.session_state["prev_sync_mode"]:
                         "Valeurs envoyées (INIT SYNCHRO)", "last_rgb_sent_remote")
     else:
         st.session_state["last_rgb_sent_local"] = None
-        # envoi initial local (optionnel, mais évite incohérence au retour en normal)
+        # envoi initial local (optionnel)
         r0 = st.session_state.get("r_local", 0)
         g0 = st.session_state.get("g_local", 0)
         b0 = st.session_state.get("b_local", 0)
@@ -307,7 +323,6 @@ if not sync_mode:
     g_val = st.sidebar.slider("Vert", 0, 255, 0, key="g_local")
     b_val = st.sidebar.slider("Bleu", 0, 255, 0, key="b_local")
 
-    # ✅ envoi uniquement si changement (comme ton ancienne version, mais sans spam rerun)
     send_if_changed(r_val, g_val, b_val, publish_rgb_local,
                     "Valeurs envoyées (LOCAL)", "last_rgb_sent_local")
 
@@ -319,7 +334,6 @@ else:
     g_val = st.sidebar.slider("Vert (RAD)", 0, 255, 0, key="g_remote")
     b_val = st.sidebar.slider("Bleu (RAD)", 0, 255, 0, key="b_remote")
 
-    # ✅ envoi uniquement si changement
     send_if_changed(r_val, g_val, b_val, publish_rgb_remote_json,
                     "Valeurs envoyées (ESP/MINH -> ESP/RAD)", "last_rgb_sent_remote")
 

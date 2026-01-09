@@ -202,7 +202,7 @@ if "sync_mode" not in st.session_state:
     st.session_state["sync_mode"] = False
 
 sync_mode = st.sidebar.toggle(
-    "Mode Synchro (je contrôle la LED de RAD)",
+    "Mode Synchro (contrôle la LED de RADIMIR)",
     value=st.session_state["sync_mode"]
 )
 st.session_state["sync_mode"] = sync_mode
@@ -238,7 +238,7 @@ if not sync_mode:
 
     send_if_changed(r_val, g_val, b_val, publish_rgb_local, "Valeurs envoyées (LOCAL)")
 
-    st.sidebar.info("Mode NORMAL : tu contrôles ta LED MINH.")
+    st.sidebar.info("Mode NORMAL : contrôles LED MINH.")
 else:
     # ===== MODE SYNCHRO : contrôle LED DISTANTE (RAD) =====
     st.sidebar.subheader("Station distante (RAD)")
@@ -248,7 +248,7 @@ else:
 
     send_if_changed(r_val, g_val, b_val, publish_rgb_remote_json, "Valeurs envoyées (RAD)")
 
-    st.sidebar.warning("Mode SYNCHRO : tu NE contrôles PLUS ta LED MINH.\nTu contrôles UNIQUEMENT la LED de RAD.")
+    st.sidebar.warning("Mode SYNCHRO : NE contrôles PLUS LED MINH.\ncontrôle UNIQUEMENT LED de RAD")
 
 st.write(
     f"**Mode RGB :** `{'SYNCHRO (contrôle RAD)' if sync_mode else 'NORMAL (contrôle MINH)'}`  "

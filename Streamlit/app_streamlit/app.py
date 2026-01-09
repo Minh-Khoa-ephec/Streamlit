@@ -112,7 +112,13 @@ def mqtt_publish(topic: str, payload: str) -> bool:
     try:
         pub = mqtt.Client()
         pub.connect(BROKER, PORT, 60)
-        pub.publish(topic, payload)
+
+        # IMPORTANT: boucle réseau pour assurer l'envoi
+        pub.loop_start()
+        info = pub.publish(topic, payload, qos=1, retain=False)
+        info.wait_for_publish(timeout=2.0)
+        pub.loop_stop()
+
         pub.disconnect()
         return True
     except Exception as e:
@@ -120,14 +126,26 @@ def mqtt_publish(topic: str, payload: str) -> bool:
         return False
 
 
+
 def publish_rgb_local(r, g, b) -> bool:
     """Mode normal : 3 topics, texte (atoi côté ESP32)."""
     try:
         pub = mqtt.Client()
         pub.connect(BROKER, PORT, 60)
-        pub.publish(TOPIC_RGB_R, str(int(r)))
-        pub.publish(TOPIC_RGB_G, str(int(g)))
-        pub.publish(TOPIC_RGB_B, str(int(b)))
+
+        pub.loop_start()
+
+        # QoS=1 + wait => évite que G/B restent bloqués
+        i1 = pub.publish(TOPIC_RGB_R, str(int(r)), qos=1, retain=False)
+        i1.wait_for_publish(timeout=2.0)
+
+        i2 = pub.publish(TOPIC_RGB_G, str(int(g)), qos=1, retain=False)
+        i2.wait_for_publish(timeout=2.0)
+
+        i3 = pub.publish(TOPIC_RGB_B, str(int(b)), qos=1, retain=False)
+        i3.wait_for_publish(timeout=2.0)
+
+        pub.loop_stop()
         pub.disconnect()
         return True
     except Exception as e:

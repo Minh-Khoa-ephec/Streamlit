@@ -104,6 +104,31 @@ def mqtt_loop():
             mqtt_state.connected = False
             time.sleep(5)
 
+def get_pub_client():
+    if "mqtt_pub" not in st.session_state:
+        c = mqtt.Client()
+        c.connect(BROKER, PORT, 60)
+        c.loop_start()
+        st.session_state["mqtt_pub"] = c
+    return st.session_state["mqtt_pub"]
+
+def mqtt_publish_fast(topic: str, payload: str, qos: int = 1) -> bool:
+    try:
+        c = get_pub_client()
+        info = c.publish(topic, payload, qos=qos, retain=False)
+        info.wait_for_publish(timeout=1.0)
+        return True
+    except Exception as e:
+        print("publish_fast error:", e)
+        # reset si souci
+        try:
+            if "mqtt_pub" in st.session_state:
+                st.session_state["mqtt_pub"].loop_stop()
+                st.session_state["mqtt_pub"].disconnect()
+        except:
+            pass
+        st.session_state.pop("mqtt_pub", None)
+        return False
 
 # ---------- Publication MQTT (LOGIQUE ANCIENNE = envoyer seulement quand ça change) ----------
 def mqtt_publish(topic: str, payload: str) -> bool:
@@ -124,27 +149,13 @@ def mqtt_publish(topic: str, payload: str) -> bool:
         return False
 
 
+TOPIC_RGB_SET = "esp32/rgb/set"
+
 def publish_rgb_local(r, g, b) -> bool:
-    """Mode normal : 3 topics, texte (atoi côté ESP32)."""
-    try:
-        pub = mqtt.Client()
-        pub.connect(BROKER, PORT, 60)
+    rgb = {"r": int(r), "g": int(g), "b": int(b)}
+    payload = json.dumps(rgb, separators=(",", ":"))
+    return mqtt_publish_fast(TOPIC_RGB_SET, payload, qos=1)
 
-        pub.loop_start()
-
-        pub.publish(TOPIC_RGB_R, str(int(r)), qos=0, retain=False)
-        pub.publish(TOPIC_RGB_G, str(int(g)), qos=0, retain=False)
-        pub.publish(TOPIC_RGB_B, str(int(b)), qos=0, retain=False)
-
-        # mini flush réseau pour éviter qu'une couleur (souvent G/B) reste bloquée
-        time.sleep(0.05)
-
-        pub.loop_stop()
-        pub.disconnect()
-        return True
-    except Exception as e:
-        print("Erreur publish RGB local:", e)
-        return False
 
 
 def publish_rgb_remote_json(r, g, b) -> bool:

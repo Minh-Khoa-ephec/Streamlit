@@ -126,12 +126,13 @@ st_autorefresh(interval=2000, key="refresh")
 #                           UI
 # ================================================================
 st.set_page_config(page_title="Station météo", layout="wide")
-st.title("Station météo – Données & LED RGB")
+st.title("Projet Final(2025-2026) - A3111 Industrie 4.0 et A304 Systèmes Embarqués 2")
+st.header("Station Météo TRAN")
 
 if mqtt_state.connected:
-    st.success("MQTT connecté")
+    st.success(f"MQTT connecté au broker {BROKER}:{PORT}")
 else:
-    st.warning("MQTT déconnecté")
+    st.warning(f"MQTT non connecté ou en attente de données depuis {BROKER}:{PORT}")
 
 # ================================================================
 #                    DONNÉES MÉTÉO

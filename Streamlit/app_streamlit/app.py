@@ -52,7 +52,7 @@ def on_connect(client, userdata, flags, rc):
     if rc == 0:
         mqtt_state.connected = True
         client.subscribe(TOPIC_SENSORS)
-        client.subscribe(TOPIC_REMOTE_RX)  # ✅ écouter aussi la synchro
+        client.subscribe(TOPIC_REMOTE_RX)  
         print(f"OK connecté, abonné à {TOPIC_SENSORS} et {TOPIC_REMOTE_RX}")
     else:
         mqtt_state.connected = False
@@ -77,8 +77,7 @@ def on_message(client, userdata, msg):
 
         # synchro (RAD->Node-RED->MINH)
         if topic == TOPIC_REMOTE_RX:
-            # ce topic peut contenir aussi nos propres envois.
-            # on stocke juste pour affichage/diagnostic
+            
             try:
                 data = json.loads(payload)
             except Exception:
@@ -239,7 +238,7 @@ if "sync_mode" not in st.session_state:
     st.session_state["sync_mode"] = False
 
 sync_mode = st.sidebar.toggle(
-    "Mode Synchro (sliders -> ESP/MINH -> Node-RED -> ESP/RAD)",
+    "Mode Synchro ",
     value=st.session_state["sync_mode"]
 )
 st.session_state["sync_mode"] = sync_mode
@@ -261,11 +260,11 @@ def send_if_changed(r, g, b, send_fn, label_ok, key_state):
         ok = send_fn(r, g, b)
         if ok:
             st.session_state[key_state] = cur
-            st.sidebar.caption(f"✅ {label_ok}")
+            st.sidebar.caption(f" {label_ok}")
         else:
-            st.sidebar.caption("❌ Échec d'envoi (broker ?)")
+            st.sidebar.caption("Échec d'envoi (broker ?)")
 
-# ✅ quand on active/désactive le mode synchro : publier le switch + envoyer une trame initiale
+# quand on active/désactive le mode synchro : publier le switch + envoyer une trame initiale
 if sync_mode != st.session_state["prev_sync_mode"]:
     mqtt_publish(TOPIC_SYNC_SWITCH, "1" if sync_mode else "0")
     st.session_state["prev_sync_mode"] = sync_mode
@@ -273,7 +272,7 @@ if sync_mode != st.session_state["prev_sync_mode"]:
     # reset anti-spam sur le mode actif
     if sync_mode:
         st.session_state["last_rgb_sent_remote"] = None
-        # ✅ envoi initial pour voir passer debug 8 tout de suite
+        # envoi initial pour voir passer debug 8 tout de suite
         r0 = st.session_state.get("r_remote", 0)
         g0 = st.session_state.get("g_remote", 0)
         b0 = st.session_state.get("b_remote", 0)

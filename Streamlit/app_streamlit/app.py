@@ -13,10 +13,8 @@ PORT = 1883
 
 TOPIC_SENSORS = "streamlit/brussels"  # capteurs via Node-RED
 
-# Mode NORMAL (station locale MINH)
-TOPIC_RGB_R = "esp32/rgb/red"
-TOPIC_RGB_G = "esp32/rgb/green"
-TOPIC_RGB_B = "esp32/rgb/blue"
+# Mode NORMAL (station locale MINH)  ✅ on envoie maintenant EN 1 SEUL JSON (plus fiable)
+TOPIC_RGB_SET = "esp32/rgb/set"  # JSON {"r":..,"g":..,"b":..}
 
 # Mode SYNCHRO : on publie sur ESP/MINH (Node-RED route vers ESP/RAD)
 TOPIC_REMOTE_SET = "ESP/MINH envoi"
@@ -42,7 +40,7 @@ if "mqtt_state" not in st.session_state:
 mqtt_state: MqttState = st.session_state["mqtt_state"]
 
 
-# ---------- Callbacks MQTT ----------
+# ---------- Callbacks MQTT (réception) ----------
 def on_connect(client, userdata, flags, rc):
     print("Code retour CONNEXION MQTT =", rc)
     if rc == 0:
@@ -89,6 +87,7 @@ def on_message(client, userdata, msg):
 
 
 def mqtt_loop():
+    """Thread de réception MQTT (persistant)."""
     client = mqtt.Client()
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
@@ -104,7 +103,12 @@ def mqtt_loop():
             mqtt_state.connected = False
             time.sleep(5)
 
+
+# ============================================================
+# ✅ PUBLICATION MQTT AMÉLIORÉE : client persistant (zéro reconnect à chaque slider)
+# ============================================================
 def get_pub_client():
+    """Client MQTT persistant pour publier rapidement (évite les retards/pertes)."""
     if "mqtt_pub" not in st.session_state:
         c = mqtt.Client()
         c.connect(BROKER, PORT, 60)
@@ -112,10 +116,11 @@ def get_pub_client():
         st.session_state["mqtt_pub"] = c
     return st.session_state["mqtt_pub"]
 
-def mqtt_publish_fast(topic: str, payload: str, qos: int = 1) -> bool:
+
+def mqtt_publish_fast(topic: str, payload: str, qos: int = 1, retain: bool = False) -> bool:
     try:
         c = get_pub_client()
-        info = c.publish(topic, payload, qos=qos, retain=False)
+        info = c.publish(topic, payload, qos=qos, retain=retain)
         info.wait_for_publish(timeout=1.0)
         return True
     except Exception as e:
@@ -125,37 +130,20 @@ def mqtt_publish_fast(topic: str, payload: str, qos: int = 1) -> bool:
             if "mqtt_pub" in st.session_state:
                 st.session_state["mqtt_pub"].loop_stop()
                 st.session_state["mqtt_pub"].disconnect()
-        except:
+        except Exception:
             pass
         st.session_state.pop("mqtt_pub", None)
         return False
 
-# ---------- Publication MQTT (LOGIQUE ANCIENNE = envoyer seulement quand ça change) ----------
-def mqtt_publish(topic: str, payload: str) -> bool:
-    """Publish rapide + fiable (évite le disconnect trop tôt)."""
-    try:
-        pub = mqtt.Client()
-        pub.connect(BROKER, PORT, 60)
-
-        pub.loop_start()
-        pub.publish(topic, payload, qos=0, retain=False)
-        time.sleep(0.03)  # mini flush réseau (important)
-        pub.loop_stop()
-
-        pub.disconnect()
-        return True
-    except Exception as e:
-        print("Erreur publish:", e)
-        return False
-
-
-TOPIC_RGB_SET = "esp32/rgb/set"
 
 def publish_rgb_local(r, g, b) -> bool:
+    """
+    ✅ Mode normal : 1 seul topic JSON (esp32/rgb/set) -> beaucoup plus fiable et instantané
+    Format côté ESP32: {"r":..,"g":..,"b":..}
+    """
     rgb = {"r": int(r), "g": int(g), "b": int(b)}
     payload = json.dumps(rgb, separators=(",", ":"))
-    return mqtt_publish_fast(TOPIC_RGB_SET, payload, qos=1)
-
+    return mqtt_publish_fast(TOPIC_RGB_SET, payload, qos=1, retain=False)
 
 
 def publish_rgb_remote_json(r, g, b) -> bool:
@@ -178,7 +166,7 @@ def publish_rgb_remote_json(r, g, b) -> bool:
     }
 
     payload = json.dumps(payload_obj, separators=(",", ":"))
-    return mqtt_publish(TOPIC_REMOTE_SET, payload)
+    return mqtt_publish_fast(TOPIC_REMOTE_SET, payload, qos=1, retain=False)
 
 
 # ---------- Lancer le thread MQTT ----------
@@ -285,15 +273,19 @@ st.session_state["sync_mode"] = sync_mode
 if "prev_sync_mode" not in st.session_state:
     st.session_state["prev_sync_mode"] = sync_mode
 
-# Anti-spam (LOGIQUE ANCIENNE)
+# Anti-spam (logique "envoyer seulement si ça change")
 if "last_rgb_sent_local" not in st.session_state:
     st.session_state["last_rgb_sent_local"] = None
 if "last_rgb_sent_remote" not in st.session_state:
     st.session_state["last_rgb_sent_remote"] = None
 
+# ✅ petit throttle pour éviter 50 publishes/sec quand tu glisses (sans casser le reste)
+if "last_send_ms" not in st.session_state:
+    st.session_state["last_send_ms"] = 0
+
 
 def send_if_changed(r, g, b, send_fn, label_ok, key_state):
-    """✅ Envoie uniquement si (r,g,b) a changé. (logique ancienne)"""
+    """✅ Envoie uniquement si (r,g,b) a changé."""
     cur = (int(r), int(g), int(b))
     if st.session_state.get(key_state) != cur:
         ok = send_fn(r, g, b)
@@ -303,9 +295,17 @@ def send_if_changed(r, g, b, send_fn, label_ok, key_state):
         else:
             st.sidebar.caption("❌ Échec d'envoi (broker ?)")
 
+def send_throttled(r, g, b, send_fn, label_ok, key_state, min_interval_ms=80):
+    now_ms = int(time.time() * 1000)
+    if now_ms - st.session_state["last_send_ms"] < min_interval_ms:
+        return
+    st.session_state["last_send_ms"] = now_ms
+    send_if_changed(r, g, b, send_fn, label_ok, key_state)
+
+
 # ✅ quand on active/désactive le mode synchro : publier le switch + envoyer une trame initiale
 if sync_mode != st.session_state["prev_sync_mode"]:
-    mqtt_publish(TOPIC_SYNC_SWITCH, "1" if sync_mode else "0")
+    mqtt_publish_fast(TOPIC_SYNC_SWITCH, "1" if sync_mode else "0", qos=1, retain=False)
     st.session_state["prev_sync_mode"] = sync_mode
 
     # reset anti-spam sur le mode actif
@@ -319,7 +319,7 @@ if sync_mode != st.session_state["prev_sync_mode"]:
                         "Valeurs envoyées (INIT SYNCHRO)", "last_rgb_sent_remote")
     else:
         st.session_state["last_rgb_sent_local"] = None
-        # envoi initial local (optionnel)
+        # envoi initial local
         r0 = st.session_state.get("r_local", 0)
         g0 = st.session_state.get("g_local", 0)
         b0 = st.session_state.get("b_local", 0)
@@ -334,8 +334,9 @@ if not sync_mode:
     g_val = st.sidebar.slider("Vert", 0, 255, 0, key="g_local")
     b_val = st.sidebar.slider("Bleu", 0, 255, 0, key="b_local")
 
-    send_if_changed(r_val, g_val, b_val, publish_rgb_local,
-                    "Valeurs envoyées (LOCAL)", "last_rgb_sent_local")
+    # ✅ publish fiable + rapide
+    send_throttled(r_val, g_val, b_val, publish_rgb_local,
+                   "Valeurs envoyées (LOCAL)", "last_rgb_sent_local")
 
     st.sidebar.info("Mode NORMAL : contrôles LED MINH.")
 else:
@@ -345,8 +346,8 @@ else:
     g_val = st.sidebar.slider("Vert (RAD)", 0, 255, 0, key="g_remote")
     b_val = st.sidebar.slider("Bleu (RAD)", 0, 255, 0, key="b_remote")
 
-    send_if_changed(r_val, g_val, b_val, publish_rgb_remote_json,
-                    "Valeurs envoyées (ESP/MINH -> ESP/RAD)", "last_rgb_sent_remote")
+    send_throttled(r_val, g_val, b_val, publish_rgb_remote_json,
+                   "Valeurs envoyées (ESP/MINH -> ESP/RAD)", "last_rgb_sent_remote")
 
     st.sidebar.warning("Mode SYNCHRO : contrôle UNIQUEMENT la LED de RAD (via Node-RED).")
 
@@ -400,6 +401,7 @@ with tab3:
         st.line_chart(df[["lum"]])
     else:
         st.info("Aucune donnée de luminosité reçue pour l'instant.")
+
 
 
 

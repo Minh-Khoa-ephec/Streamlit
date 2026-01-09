@@ -33,7 +33,7 @@ class MqttState:
     def __init__(self):
         self.last = None
         self.connected = False
-        self.last_sync_rx = None  # dernière trame synchro reçue (RAD->MINH via Node-RED)
+        self.last_sync_rx = None  # dernière trame synchro reçue
 
 
 if "mqtt_state" not in st.session_state:
@@ -48,7 +48,7 @@ def on_connect(client, userdata, flags, rc):
     if rc == 0:
         mqtt_state.connected = True
         client.subscribe(TOPIC_SENSORS)
-        client.subscribe(TOPIC_REMOTE_RX)  # ✅ écouter aussi la synchro
+        client.subscribe(TOPIC_REMOTE_RX)
         print(f"OK connecté, abonné à {TOPIC_SENSORS} et {TOPIC_REMOTE_RX}")
     else:
         mqtt_state.connected = False
@@ -71,10 +71,8 @@ def on_message(client, userdata, msg):
             mqtt_state.last = data
             return
 
-        # synchro (RAD->Node-RED->MINH)
+        # synchro RX
         if topic == TOPIC_REMOTE_RX:
-            # ce topic peut contenir aussi nos propres envois.
-            # on stocke juste pour affichage/diagnostic
             try:
                 data = json.loads(payload)
             except Exception:
@@ -107,16 +105,16 @@ def mqtt_loop():
             time.sleep(5)
 
 
-# ---------- Publication MQTT ----------
+# ---------- Publication MQTT (LOGIQUE ANCIENNE = envoyer seulement quand ça change) ----------
 def mqtt_publish(topic: str, payload: str) -> bool:
+    """Publish rapide + fiable (évite le disconnect trop tôt)."""
     try:
         pub = mqtt.Client()
         pub.connect(BROKER, PORT, 60)
 
-        # IMPORTANT: boucle réseau pour assurer l'envoi
         pub.loop_start()
-        info = pub.publish(topic, payload, qos=1, retain=False)
-        info.wait_for_publish(timeout=2.0)
+        pub.publish(topic, payload, qos=0, retain=False)
+        time.sleep(0.03)  # mini flush réseau (important)
         pub.loop_stop()
 
         pub.disconnect()
@@ -124,7 +122,6 @@ def mqtt_publish(topic: str, payload: str) -> bool:
     except Exception as e:
         print("Erreur publish:", e)
         return False
-
 
 
 def publish_rgb_local(r, g, b) -> bool:
@@ -135,15 +132,12 @@ def publish_rgb_local(r, g, b) -> bool:
 
         pub.loop_start()
 
-        # QoS=1 + wait => évite que G/B restent bloqués
-        i1 = pub.publish(TOPIC_RGB_R, str(int(r)), qos=1, retain=False)
-        i1.wait_for_publish(timeout=2.0)
+        pub.publish(TOPIC_RGB_R, str(int(r)), qos=0, retain=False)
+        pub.publish(TOPIC_RGB_G, str(int(g)), qos=0, retain=False)
+        pub.publish(TOPIC_RGB_B, str(int(b)), qos=0, retain=False)
 
-        i2 = pub.publish(TOPIC_RGB_G, str(int(g)), qos=1, retain=False)
-        i2.wait_for_publish(timeout=2.0)
-
-        i3 = pub.publish(TOPIC_RGB_B, str(int(b)), qos=1, retain=False)
-        i3.wait_for_publish(timeout=2.0)
+        # mini flush réseau pour éviter qu'une couleur (souvent G/B) reste bloquée
+        time.sleep(0.05)
 
         pub.loop_stop()
         pub.disconnect()
@@ -249,6 +243,7 @@ with col2:
 # ---------- Sidebar : Contrôle LED ----------
 st.sidebar.header("Contrôle LED RGB")
 
+# état synchro
 if "sync_mode" not in st.session_state:
     st.session_state["sync_mode"] = False
 
@@ -258,11 +253,11 @@ sync_mode = st.sidebar.toggle(
 )
 st.session_state["sync_mode"] = sync_mode
 
-# notifier Node-RED quand le switch change
+# mémoriser l'ancien état du switch
 if "prev_sync_mode" not in st.session_state:
     st.session_state["prev_sync_mode"] = sync_mode
 
-# Anti-spam
+# Anti-spam (LOGIQUE ANCIENNE)
 if "last_rgb_sent_local" not in st.session_state:
     st.session_state["last_rgb_sent_local"] = None
 if "last_rgb_sent_remote" not in st.session_state:
@@ -270,14 +265,16 @@ if "last_rgb_sent_remote" not in st.session_state:
 
 
 def send_if_changed(r, g, b, send_fn, label_ok, key_state):
+    """✅ Envoie uniquement si (r,g,b) a changé. (logique ancienne)"""
     cur = (int(r), int(g), int(b))
     if st.session_state.get(key_state) != cur:
         ok = send_fn(r, g, b)
         if ok:
             st.session_state[key_state] = cur
-            st.sidebar.caption(f"✅ {label_ok}")
+            st.sidebar.caption(f"✅ {label_ok} : {cur}")
         else:
             st.sidebar.caption("❌ Échec d'envoi (broker ?)")
+
 
 # ✅ quand on active/désactive le mode synchro : publier le switch + envoyer une trame initiale
 if sync_mode != st.session_state["prev_sync_mode"]:
@@ -287,13 +284,20 @@ if sync_mode != st.session_state["prev_sync_mode"]:
     # reset anti-spam sur le mode actif
     if sync_mode:
         st.session_state["last_rgb_sent_remote"] = None
-        # ✅ envoi initial pour voir passer debug 8 tout de suite
+        # envoi initial
         r0 = st.session_state.get("r_remote", 0)
         g0 = st.session_state.get("g_remote", 0)
         b0 = st.session_state.get("b_remote", 0)
-        publish_rgb_remote_json(r0, g0, b0)
+        send_if_changed(r0, g0, b0, publish_rgb_remote_json,
+                        "Valeurs envoyées (INIT SYNCHRO)", "last_rgb_sent_remote")
     else:
         st.session_state["last_rgb_sent_local"] = None
+        # envoi initial local (optionnel, mais évite incohérence au retour en normal)
+        r0 = st.session_state.get("r_local", 0)
+        g0 = st.session_state.get("g_local", 0)
+        b0 = st.session_state.get("b_local", 0)
+        send_if_changed(r0, g0, b0, publish_rgb_local,
+                        "Valeurs envoyées (INIT LOCAL)", "last_rgb_sent_local")
 
 
 if not sync_mode:
@@ -303,17 +307,21 @@ if not sync_mode:
     g_val = st.sidebar.slider("Vert", 0, 255, 0, key="g_local")
     b_val = st.sidebar.slider("Bleu", 0, 255, 0, key="b_local")
 
-    send_if_changed(r_val, g_val, b_val, publish_rgb_local, "Valeurs envoyées (LOCAL)", "last_rgb_sent_local")
+    # ✅ envoi uniquement si changement (comme ton ancienne version, mais sans spam rerun)
+    send_if_changed(r_val, g_val, b_val, publish_rgb_local,
+                    "Valeurs envoyées (LOCAL)", "last_rgb_sent_local")
+
     st.sidebar.info("Mode NORMAL : contrôles LED MINH.")
 else:
     # ===== MODE SYNCHRO : contrôle LED DISTANTE (RAD) =====
     st.sidebar.subheader("Station distante (RAD)")
-
     r_val = st.sidebar.slider("Rouge (RAD)", 0, 255, 0, key="r_remote")
     g_val = st.sidebar.slider("Vert (RAD)", 0, 255, 0, key="g_remote")
     b_val = st.sidebar.slider("Bleu (RAD)", 0, 255, 0, key="b_remote")
 
-    send_if_changed(r_val, g_val, b_val, publish_rgb_remote_json, "Valeurs envoyées (ESP/MINH -> ESP/RAD)", "last_rgb_sent_remote")
+    # ✅ envoi uniquement si changement
+    send_if_changed(r_val, g_val, b_val, publish_rgb_remote_json,
+                    "Valeurs envoyées (ESP/MINH -> ESP/RAD)", "last_rgb_sent_remote")
 
     st.sidebar.warning("Mode SYNCHRO : contrôle UNIQUEMENT la LED de RAD (via Node-RED).")
 
@@ -321,6 +329,7 @@ st.write(
     f"**Mode RGB :** `{'SYNCHRO (sliders -> RAD)' if sync_mode else 'NORMAL (sliders -> MINH)'}`  "
     f"| **Broker :** `{BROKER}:{PORT}`"
 )
+
 
 # ---------- Historique ----------
 history = st.session_state["history"]
@@ -366,6 +375,7 @@ with tab3:
         st.line_chart(df[["lum"]])
     else:
         st.info("Aucune donnée de luminosité reçue pour l'instant.")
+
 
 
 

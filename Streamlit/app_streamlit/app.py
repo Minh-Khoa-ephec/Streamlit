@@ -16,7 +16,7 @@ TOPIC_SENSORS = "streamlit/brussels"  # capteurs via Node-RED
 # Mode NORMAL (station locale MINH) ✅ 1 seul JSON (plus fiable)
 TOPIC_RGB_SET = "esp32/rgb/set"  # JSON {"r":..,"g":..,"b":..}
 
-# ✅ RGB STATE (retour ESP32)
+# RGB STATE (retour ESP32)
 TOPIC_RGB_STATE = "esp32/rgb/state"  # JSON état réel: {"on":..,"r":..,"g":..,"b":..,"auto":..,"sync":..}
 
 # Mode SYNCHRO : on publie vers ESP/MINH (Node-RED route vers ESP/RAD)
@@ -35,7 +35,7 @@ class MqttState:
         self.last = None
         self.connected = False
         self.last_sync_rx = None  # dernière trame synchro reçue
-        self.last_rgb_state = None  # ✅ dernier esp32/rgb/state reçu
+        self.last_rgb_state = None  # dernier esp32/rgb/state reçu
 
 
 if "mqtt_state" not in st.session_state:
@@ -51,7 +51,7 @@ def on_connect(client, userdata, flags, rc):
         mqtt_state.connected = True
         client.subscribe(TOPIC_SENSORS)
         client.subscribe(TOPIC_REMOTE_RX)
-        client.subscribe(TOPIC_RGB_STATE)  # ✅ écouter rgb/state
+        client.subscribe(TOPIC_RGB_STATE)
         print(f"OK connecté, abonné à {TOPIC_SENSORS}, {TOPIC_REMOTE_RX} et {TOPIC_RGB_STATE}")
     else:
         mqtt_state.connected = False
@@ -87,7 +87,7 @@ def on_message(client, userdata, msg):
             mqtt_state.last_sync_rx = data
             return
 
-        # ✅ rgb state (ESP32 -> retour d'état)
+        # rgb state (ESP32 -> retour d'état)
         if topic == TOPIC_RGB_STATE:
             try:
                 data = json.loads(payload)
@@ -123,10 +123,10 @@ def mqtt_loop():
 
 
 # ============================================================
-# ✅ PUBLICATION MQTT AMÉLIORÉE : client persistant (zéro reconnect à chaque slider)
+# PUBLICATION MQTT : client persistant (évite les retards/pertes)
 # ============================================================
 def get_pub_client():
-    """Client MQTT persistant pour publier rapidement (évite les retards/pertes)."""
+    """Client MQTT persistant pour publier rapidement."""
     if "mqtt_pub" not in st.session_state:
         c = mqtt.Client()
         c.connect(BROKER, PORT, 60)
@@ -155,10 +155,7 @@ def mqtt_publish_fast(topic: str, payload: str, qos: int = 1, retain: bool = Fal
 
 
 def publish_rgb_local(r, g, b) -> bool:
-    """
-    ✅ Mode normal : 1 seul topic JSON (esp32/rgb/set) -> fiable et instantané
-    Format côté ESP32: {"r":..,"g":..,"b":..}
-    """
+    """Mode normal : 1 topic JSON (esp32/rgb/set)."""
     rgb = {"r": int(r), "g": int(g), "b": int(b)}
     payload = json.dumps(rgb, separators=(",", ":"))
     return mqtt_publish_fast(TOPIC_RGB_SET, payload, qos=1, retain=False)
@@ -166,12 +163,8 @@ def publish_rgb_local(r, g, b) -> bool:
 
 def publish_rgb_remote_json(r, g, b, sync_mode: bool) -> bool:
     """
-    ✅ Mode synchro : ENVOI EXACT demandé vers RAD via Node-RED
-    Format EXACT :
-    {"Synchro":true,"LED":true,"R":102,"G":0,"B":0}
-
-    - Synchro = true si mode synchro activé
-    - LED = true si au moins un slider != 0
+    Mode synchro : format EXACT demandé vers RAD via Node-RED
+    {"Synchro":true,"LED":true,"R":...,"G":...,"B":...}
     """
     r_i, g_i, b_i = int(r), int(g), int(b)
     led_on = (r_i != 0) or (g_i != 0) or (b_i != 0)
@@ -211,7 +204,7 @@ else:
 
 data = mqtt_state.last
 sync_rx = mqtt_state.last_sync_rx
-rgb_state = mqtt_state.last_rgb_state  # ✅
+rgb_state = mqtt_state.last_rgb_state
 
 city = "Bruxelles"
 temp = None
@@ -282,19 +275,11 @@ with col2:
 # ---------- Sidebar : Contrôle LED ----------
 st.sidebar.header("Contrôle LED RGB")
 
-# état synchro
+# init états
 if "sync_mode" not in st.session_state:
     st.session_state["sync_mode"] = False
-
-sync_mode = st.sidebar.toggle(
-    "Mode Synchro (sliders -> ESP/MINH -> Node-RED -> ESP/RAD)",
-    value=st.session_state["sync_mode"]
-)
-st.session_state["sync_mode"] = sync_mode
-
-# mémoriser l'ancien état du switch
 if "prev_sync_mode" not in st.session_state:
-    st.session_state["prev_sync_mode"] = sync_mode
+    st.session_state["prev_sync_mode"] = st.session_state["sync_mode"]
 
 # Anti-spam (logique "envoyer seulement si ça change")
 if "last_rgb_sent_local" not in st.session_state:
@@ -302,13 +287,54 @@ if "last_rgb_sent_local" not in st.session_state:
 if "last_rgb_sent_remote" not in st.session_state:
     st.session_state["last_rgb_sent_remote"] = None
 
-# ✅ petit throttle pour éviter spam pendant le drag
+# throttle pour éviter spam pendant le drag
 if "last_send_ms" not in st.session_state:
     st.session_state["last_send_ms"] = 0
 
 
+# ✅ callback robuste : publie le switch uniquement lors du clic (pas à chaque rerun)
+def on_sync_toggle_change():
+    new_mode = bool(st.session_state["sync_toggle"])
+    st.session_state["sync_mode"] = new_mode
+
+    # ✅ retain=True pour que l'ESP32 récupère toujours le dernier ON/OFF
+    mqtt_publish_fast(TOPIC_SYNC_SWITCH, "1" if new_mode else "0", qos=1, retain=True)
+
+    # maj prev
+    st.session_state["prev_sync_mode"] = new_mode
+
+    # reset anti-spam sur le mode actif + envoi initial
+    if new_mode:
+        st.session_state["last_rgb_sent_remote"] = None
+        r0 = st.session_state.get("r_remote", 0)
+        g0 = st.session_state.get("g_remote", 0)
+        b0 = st.session_state.get("b_remote", 0)
+        ok = publish_rgb_remote_json(r0, g0, b0, True)
+        if ok:
+            st.session_state["last_rgb_sent_remote"] = (int(r0), int(g0), int(b0))
+    else:
+        st.session_state["last_rgb_sent_local"] = None
+        r0 = st.session_state.get("r_local", 0)
+        g0 = st.session_state.get("g_local", 0)
+        b0 = st.session_state.get("b_local", 0)
+        ok = publish_rgb_local(r0, g0, b0)
+        if ok:
+            st.session_state["last_rgb_sent_local"] = (int(r0), int(g0), int(b0))
+
+
+# ✅ Toggle avec key stable (évite les rebonds autorefresh)
+st.sidebar.toggle(
+    "Mode Synchro (sliders -> ESP/MINH -> Node-RED -> ESP/RAD)",
+    key="sync_toggle",
+    value=st.session_state["sync_mode"],
+    on_change=on_sync_toggle_change
+)
+
+# source de vérité
+sync_mode = bool(st.session_state["sync_mode"])
+
+
 def send_if_changed(r, g, b, send_fn, label_ok, key_state):
-    """✅ Envoie uniquement si (r,g,b) a changé."""
     cur = (int(r), int(g), int(b))
     if st.session_state.get(key_state) != cur:
         ok = send_fn(r, g, b)
@@ -326,38 +352,8 @@ def send_throttled(r, g, b, send_fn, label_ok, key_state, min_interval_ms=80):
     send_if_changed(r, g, b, send_fn, label_ok, key_state)
 
 
-# ✅ quand on active/désactive le mode synchro : publier le switch + envoyer une trame initiale
-if sync_mode != st.session_state["prev_sync_mode"]:
-    mqtt_publish_fast(TOPIC_SYNC_SWITCH, "1" if sync_mode else "0", qos=1, retain=False)
-    st.session_state["prev_sync_mode"] = sync_mode
-
-    # reset anti-spam sur le mode actif
-    if sync_mode:
-        st.session_state["last_rgb_sent_remote"] = None
-        # envoi initial
-        r0 = st.session_state.get("r_remote", 0)
-        g0 = st.session_state.get("g_remote", 0)
-        b0 = st.session_state.get("b_remote", 0)
-        # IMPORTANT: ici on impose Synchro:true
-        if st.session_state.get("last_rgb_sent_remote") != (int(r0), int(g0), int(b0)):
-            ok = publish_rgb_remote_json(r0, g0, b0, True)
-            if ok:
-                st.session_state["last_rgb_sent_remote"] = (int(r0), int(g0), int(b0))
-                st.sidebar.caption(f"✅ Valeurs envoyées (INIT SYNCHRO) : {(int(r0), int(g0), int(b0))}")
-            else:
-                st.sidebar.caption("❌ Échec INIT SYNCHRO")
-    else:
-        st.session_state["last_rgb_sent_local"] = None
-        # envoi initial local
-        r0 = st.session_state.get("r_local", 0)
-        g0 = st.session_state.get("g_local", 0)
-        b0 = st.session_state.get("b_local", 0)
-        send_if_changed(r0, g0, b0, publish_rgb_local,
-                        "Valeurs envoyées (INIT LOCAL)", "last_rgb_sent_local")
-
-
 if not sync_mode:
-    # ===== MODE NORMAL : contrôle LED LOCALE (MINH) =====
+    # MODE NORMAL
     st.sidebar.subheader("Station locale (MINH)")
     r_val = st.sidebar.slider("Rouge", 0, 255, 0, key="r_local")
     g_val = st.sidebar.slider("Vert", 0, 255, 0, key="g_local")
@@ -368,13 +364,12 @@ if not sync_mode:
 
     st.sidebar.info("Mode NORMAL : contrôles LED MINH.")
 else:
-    # ===== MODE SYNCHRO : contrôle LED DISTANTE (RAD) =====
+    # MODE SYNCHRO
     st.sidebar.subheader("Station distante (RAD)")
     r_val = st.sidebar.slider("Rouge (RAD)", 0, 255, 0, key="r_remote")
     g_val = st.sidebar.slider("Vert (RAD)", 0, 255, 0, key="g_remote")
     b_val = st.sidebar.slider("Bleu (RAD)", 0, 255, 0, key="b_remote")
 
-    # ✅ ici on envoie EXACT: {"Synchro":true,"LED":true,"R":...,"G":...,"B":...}
     def _send_remote(r, g, b):
         return publish_rgb_remote_json(r, g, b, True)
 
@@ -383,7 +378,7 @@ else:
 
     st.sidebar.warning("Mode SYNCHRO : contrôle UNIQUEMENT la LED de RAD (via Node-RED).")
 
-# ---------- Sidebar : RGB State (retour ESP32) ----------
+# Sidebar : RGB State
 st.sidebar.subheader("État LED (esp32/rgb/state)")
 
 if rgb_state is None:
@@ -456,8 +451,6 @@ with tab3:
         st.line_chart(df[["lum"]])
     else:
         st.info("Aucune donnée de luminosité reçue pour l'instant.")
-
-
 
 
 

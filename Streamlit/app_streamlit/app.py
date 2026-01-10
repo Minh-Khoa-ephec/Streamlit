@@ -22,8 +22,8 @@ TOPIC_RGB_STATE = "esp32/rgb/state"  # JSON état réel: {"on":..,"r":..,"g":..,
 # Mode SYNCHRO : on publie vers ESP/MINH (Node-RED route vers ESP/RAD)
 TOPIC_REMOTE_SET = "ESP/MINH envoi"
 
-# Réception synchro (RAD -> Node-RED -> MINH)
-TOPIC_REMOTE_RX = "ESP/MINH reception"
+# ✅ Réception synchro (RAD -> Node-RED -> MINH) : retiré côté Streamlit (pas utilisé)
+# TOPIC_REMOTE_RX = "ESP/MINH reception"
 
 # Switch synchro (Node-RED + ESP32)
 TOPIC_SYNC_SWITCH = "ESP/sync"  # payload "1" / "0"
@@ -34,7 +34,6 @@ class MqttState:
     def __init__(self):
         self.last = None
         self.connected = False
-        self.last_sync_rx = None  # dernière trame synchro reçue
         self.last_rgb_state = None  # dernier esp32/rgb/state reçu
 
 
@@ -50,9 +49,8 @@ def on_connect(client, userdata, flags, rc):
     if rc == 0:
         mqtt_state.connected = True
         client.subscribe(TOPIC_SENSORS)
-        client.subscribe(TOPIC_REMOTE_RX)
         client.subscribe(TOPIC_RGB_STATE)
-        print(f"OK connecté, abonné à {TOPIC_SENSORS}, {TOPIC_REMOTE_RX} et {TOPIC_RGB_STATE}")
+        print(f"OK connecté, abonné à {TOPIC_SENSORS} et {TOPIC_RGB_STATE}")
     else:
         mqtt_state.connected = False
 
@@ -72,19 +70,6 @@ def on_message(client, userdata, msg):
             if "ts" not in data:
                 data["ts"] = time.time()
             mqtt_state.last = data
-            return
-
-        # synchro RX
-        if topic == TOPIC_REMOTE_RX:
-            try:
-                data = json.loads(payload)
-            except Exception:
-                data = {"raw": payload}
-
-            if isinstance(data, dict) and "ts" not in data:
-                data["ts"] = time.time()
-
-            mqtt_state.last_sync_rx = data
             return
 
         # rgb state (ESP32 -> retour d'état)
@@ -203,7 +188,6 @@ else:
     st.warning(f"MQTT non connecté ou en attente de données depuis {BROKER}:{PORT}")
 
 data = mqtt_state.last
-sync_rx = mqtt_state.last_sync_rx
 rgb_state = mqtt_state.last_rgb_state
 
 city = "Bruxelles"
@@ -265,9 +249,6 @@ with col2:
     st.subheader("Dernière trame reçue (capteurs)")
     st.json(data if data is not None else {"info": "Aucune donnée reçue pour l'instant"})
 
-    st.subheader("Dernière trame reçue (synchro ESP/MINH)")
-    st.json(sync_rx if sync_rx is not None else {"info": "Aucune trame synchro reçue pour l'instant"})
-
     st.subheader("Dernière trame reçue (esp32/rgb/state)")
     st.json(rgb_state if rgb_state is not None else {"info": "Aucun état RGB reçu pour l'instant"})
 
@@ -292,12 +273,12 @@ if "last_send_ms" not in st.session_state:
     st.session_state["last_send_ms"] = 0
 
 
-# ✅ callback robuste : publie le switch uniquement lors du clic (pas à chaque rerun)
+# callback robuste : publie le switch uniquement lors du clic
 def on_sync_toggle_change():
     new_mode = bool(st.session_state["sync_toggle"])
     st.session_state["sync_mode"] = new_mode
 
-    # ✅ retain=True pour que l'ESP32 récupère toujours le dernier ON/OFF
+    # retain=True pour que l'ESP32 récupère toujours le dernier ON/OFF
     mqtt_publish_fast(TOPIC_SYNC_SWITCH, "1" if new_mode else "0", qos=1, retain=True)
 
     # maj prev
@@ -322,7 +303,7 @@ def on_sync_toggle_change():
             st.session_state["last_rgb_sent_local"] = (int(r0), int(g0), int(b0))
 
 
-# ✅ Toggle avec key stable (évite les rebonds autorefresh)
+# Toggle avec key stable
 st.sidebar.toggle(
     "Mode Synchro (sliders -> ESP/MINH -> Node-RED -> ESP/RAD)",
     key="sync_toggle",
@@ -330,7 +311,6 @@ st.sidebar.toggle(
     on_change=on_sync_toggle_change
 )
 
-# source de vérité
 sync_mode = bool(st.session_state["sync_mode"])
 
 
@@ -393,7 +373,7 @@ else:
 
     c1, c2 = st.sidebar.columns(2)
     c1.metric("LED", "ON" if led_on else "OFF")
-    c2.metric("Sync", "ON" if sync else "OFF")
+    c2.metric("Sync(ESP)", "ON" if sync else "OFF")
 
     c3, c4 = st.sidebar.columns(2)
     c3.metric("Mode", "AUTO" if auto else "MANU")
@@ -451,6 +431,7 @@ with tab3:
         st.line_chart(df[["lum"]])
     else:
         st.info("Aucune donnée de luminosité reçue pour l'instant.")
+
 
 
 

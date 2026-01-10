@@ -16,6 +16,9 @@ TOPIC_SENSORS = "streamlit/brussels"  # capteurs via Node-RED
 # Mode NORMAL (station locale MINH) ✅ 1 seul JSON (plus fiable)
 TOPIC_RGB_SET = "esp32/rgb/set"  # JSON {"r":..,"g":..,"b":..}
 
+# ✅ RGB STATE (retour ESP32)
+TOPIC_RGB_STATE = "esp32/rgb/state"  # JSON état réel: {"on":..,"r":..,"g":..,"b":..,"auto":..,"sync":..}
+
 # Mode SYNCHRO : on publie vers ESP/MINH (Node-RED route vers ESP/RAD)
 TOPIC_REMOTE_SET = "ESP/MINH envoi"
 
@@ -32,6 +35,7 @@ class MqttState:
         self.last = None
         self.connected = False
         self.last_sync_rx = None  # dernière trame synchro reçue
+        self.last_rgb_state = None  # ✅ dernier esp32/rgb/state reçu
 
 
 if "mqtt_state" not in st.session_state:
@@ -47,7 +51,8 @@ def on_connect(client, userdata, flags, rc):
         mqtt_state.connected = True
         client.subscribe(TOPIC_SENSORS)
         client.subscribe(TOPIC_REMOTE_RX)
-        print(f"OK connecté, abonné à {TOPIC_SENSORS} et {TOPIC_REMOTE_RX}")
+        client.subscribe(TOPIC_RGB_STATE)  # ✅ écouter rgb/state
+        print(f"OK connecté, abonné à {TOPIC_SENSORS}, {TOPIC_REMOTE_RX} et {TOPIC_RGB_STATE}")
     else:
         mqtt_state.connected = False
 
@@ -80,6 +85,19 @@ def on_message(client, userdata, msg):
                 data["ts"] = time.time()
 
             mqtt_state.last_sync_rx = data
+            return
+
+        # ✅ rgb state (ESP32 -> retour d'état)
+        if topic == TOPIC_RGB_STATE:
+            try:
+                data = json.loads(payload)
+            except Exception:
+                data = {"raw": payload}
+
+            if isinstance(data, dict) and "ts" not in data:
+                data["ts"] = time.time()
+
+            mqtt_state.last_rgb_state = data
             return
 
     except Exception as e:
@@ -193,6 +211,7 @@ else:
 
 data = mqtt_state.last
 sync_rx = mqtt_state.last_sync_rx
+rgb_state = mqtt_state.last_rgb_state  # ✅
 
 city = "Bruxelles"
 temp = None
@@ -255,6 +274,9 @@ with col2:
 
     st.subheader("Dernière trame reçue (synchro ESP/MINH)")
     st.json(sync_rx if sync_rx is not None else {"info": "Aucune trame synchro reçue pour l'instant"})
+
+    st.subheader("Dernière trame reçue (esp32/rgb/state)")
+    st.json(rgb_state if rgb_state is not None else {"info": "Aucun état RGB reçu pour l'instant"})
 
 
 # ---------- Sidebar : Contrôle LED ----------
@@ -361,6 +383,29 @@ else:
 
     st.sidebar.warning("Mode SYNCHRO : contrôle UNIQUEMENT la LED de RAD (via Node-RED).")
 
+# ---------- Sidebar : RGB State (retour ESP32) ----------
+st.sidebar.subheader("État LED (esp32/rgb/state)")
+
+if rgb_state is None:
+    st.sidebar.info("Aucun état RGB reçu pour l'instant.")
+else:
+    led_on = rgb_state.get("on")
+    r = rgb_state.get("r")
+    g = rgb_state.get("g")
+    b = rgb_state.get("b")
+    auto = rgb_state.get("auto")
+    sync = rgb_state.get("sync")
+
+    c1, c2 = st.sidebar.columns(2)
+    c1.metric("LED", "ON" if led_on else "OFF")
+    c2.metric("Sync", "ON" if sync else "OFF")
+
+    c3, c4 = st.sidebar.columns(2)
+    c3.metric("Mode", "AUTO" if auto else "MANU")
+    c4.metric("RGB", f"{r},{g},{b}")
+
+    st.sidebar.json(rgb_state)
+
 st.write(
     f"**Mode RGB :** `{'SYNCHRO (sliders -> RAD)' if sync_mode else 'NORMAL (sliders -> MINH)'}`  "
     f"| **Broker :** `{BROKER}:{PORT}`"
@@ -411,6 +456,7 @@ with tab3:
         st.line_chart(df[["lum"]])
     else:
         st.info("Aucune donnée de luminosité reçue pour l'instant.")
+
 
 
 

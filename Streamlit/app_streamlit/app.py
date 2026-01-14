@@ -7,7 +7,7 @@ import pandas as pd
 import paho.mqtt.client as mqtt
 from streamlit_autorefresh import st_autorefresh
 
-# ✅ IMPORTANT : set_page_config en PREMIER
+# ---------- Config Streamlit ----------
 st.set_page_config(page_title="Météo Bruxelles", page_icon="☁️", layout="wide")
 
 # ---------- Config MQTT ----------
@@ -22,7 +22,7 @@ TOPIC_RGB_SET = "esp32/rgb/set"  # JSON {"r":..,"g":..,"b":..}
 # RGB STATE (retour ESP32)
 TOPIC_RGB_STATE = "esp32/rgb/state"
 
-# Mode SYNCHRO : on publie vers ESP/MINH (Node-RED route vers ESP/RAD)
+# Mode SYNCHRO : publie vers ESP/MINH
 TOPIC_REMOTE_SET = "ESP/MINH envoi"
 
 # Switch synchro (Node-RED + ESP32)
@@ -108,13 +108,10 @@ def mqtt_loop():
 
 
 # ============================================================
-# ✅ PUBLICATION MQTT : NON-BLOQUANTE (important pour Streamlit)
+# PUBLICATION MQTT 
 # ============================================================
 def get_pub_client():
-    """
-    Client MQTT persistant pour publier rapidement.
-    ✅ Non-bloquant : connect_async + loop_start
-    """
+
     if "mqtt_pub" not in st.session_state:
         c = mqtt.Client()
         c.reconnect_delay_set(min_delay=1, max_delay=10)
@@ -125,9 +122,7 @@ def get_pub_client():
 
 
 def mqtt_publish_fast(topic: str, payload: str, qos: int = 0, retain: bool = False) -> bool:
-    """
-    ✅ ne JAMAIS bloquer l'UI Streamlit : pas de wait_for_publish()
-    """
+
     try:
         c = get_pub_client()
         c.publish(topic, payload, qos=qos, retain=retain)
@@ -221,7 +216,7 @@ with col1:
     with c2:
         st.metric("Humidité", fmt_metric(hum, "%", 1))
     with c3:
-        st.metric("Luminosité", fmt_metric(lum, "", 0))
+        st.metric("Luminosité", fmt_metric(lum, "%", 0))
 
     if temp is None:
         feeling = "Inconnu (en attente de données)"

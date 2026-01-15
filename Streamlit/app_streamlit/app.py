@@ -172,7 +172,7 @@ st_autorefresh(interval=2000, key="mqtt_refresh")
 
 # ---------- UI ----------
 st.title("Projet Final(2025-2026) - A3111 Industrie 4.0 et A304 Systèmes Embarqués 2")
-st.header("Station Météo TRAN")
+st.header("Station Météo TRAN - Groupe A05")
 
 if mqtt_state.connected:
     st.success(f"MQTT connecté au broker {BROKER}:{PORT}")
